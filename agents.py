@@ -1,4 +1,5 @@
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRetryMiddleware
 from tools import web_search, scrape_url
 from langchain_groq import ChatGroq
 from groq import RateLimitError
@@ -18,7 +19,9 @@ model = ChatGroq(
     temperature=0,
     max_tokens=2048,
     api_key=groq_api_key,
-).with_retry(
+)
+
+retrying_model = model.with_retry(
     retry_if_exception_type=(RateLimitError,),
     wait_exponential_jitter=True,
     exponential_jitter_params={"initial": 2, "max": 30, "exp_base": 2, "jitter": 1},
@@ -26,11 +29,23 @@ model = ChatGroq(
 )
 
 
+def _rate_limit_retry_middleware():
+    return ModelRetryMiddleware(
+        max_retries=4,
+        retry_on=(RateLimitError,),
+        initial_delay=2,
+        max_delay=30,
+        backoff_factor=2,
+        jitter=True,
+    )
+
+
 # 1st agent
 def build_search_agent():
     return create_agent(
         model=model,
         tools=[web_search],
+        middleware=[_rate_limit_retry_middleware()],
     )
 
 
@@ -39,6 +54,7 @@ def build_reader_agent():
     return create_agent(
         model=model,
         tools=[scrape_url],
+        middleware=[_rate_limit_retry_middleware()],
     )
 
 #writer_chain
@@ -107,7 +123,7 @@ Constraints:
 
 parser = StrOutputParser()
 
-writer_chain = writer_prompt | model | parser
+writer_chain = writer_prompt | retrying_model | parser
 
 #critic chain
 
@@ -185,4 +201,4 @@ Suggested Next Steps:
     )
 ])
 
-critic_chain = critic_prompt | model | parser
+critic_chain = critic_prompt | retrying_model | parser
